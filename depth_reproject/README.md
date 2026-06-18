@@ -32,6 +32,7 @@ background); the overlay fixes close-range parallax. Far = base, near = overlay.
 | **`zed_360_panorama_gpu.py`** | The **GPU pipeline** — the cylinder panorama with the depth reprojection moved to the GPU and the base kept **full** (holes fix). Correct output, but still slow on the rig (see findings below). Has `TIMING`/`SCALE`/`POINT_STRIDE` knobs. |
 | **`fused_pointcloud_viewer.py`** | Alternative renderer — **no cylinder, no stitching**. Fuses the 4 colored point clouds in 3D and renders with **Open3D**. Holes and all (depth-viewer style). Slow (~1 fps) due to Open3D's per-frame rebuild + GPU→CPU→GPU copies. |
 | **`fused_pc_fast.py`** | Leaner version of the above using **pyqtgraph** (one VBO upload/frame, zero CUDA compute). Still ~1.4 fps — which is what proved the bottleneck is *capture*, not rendering (see findings). |
+| **`cpp/NovaFusedCloud`** | **C++ GPU-resident** fused point cloud — `retrieveMeasure(MEM::GPU)` + CUDA–GL interop (Depth Viewer path). Four threaded captures, rig extrinsics as GL model matrices. Benchmark this before investing in more Python rendering. |
 
 ## How they relate
 
@@ -47,6 +48,10 @@ whether the base is emptied (CPU, buggy) or kept full (GPU, fixed).
 ## Running (on the rig)
 
 ```bash
+# 0) GPU-resident fused cloud viewer (C++ — try this first for fps)
+cd depth_reproject/cpp && mkdir -p build && cd build && cmake .. && make -j$(nproc)
+./NovaFusedCloud          # q/ESC to quit — see cpp/README.md
+
 # 1) confirm the GPU math works on your torch build
 python3 reproject_gpu.py          # expect: "all GPU-math self-tests passed"
 
