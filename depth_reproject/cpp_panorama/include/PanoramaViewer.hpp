@@ -22,6 +22,9 @@ public:
     void setTitle(const char* title);
     void close();
 
+    // Returns the last pressed key (besides quit) and clears it; 0 if none.
+    int consumeKey();
+
 private:
     int pano_w_ = 0;
     int pano_h_ = 0;
@@ -31,6 +34,7 @@ private:
     bool mapped_ = false;
 
     static bool available_;
+    static int last_key_;
     static void keyCb(unsigned char key, int x, int y);
     static void closeCb();
     static void reshapeCb(int w, int h);

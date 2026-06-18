@@ -60,6 +60,13 @@ static const int kPointStride = 2; // subsample the cloud (every Nth px)
 static const int kSplat = 1;       // overlay splat radius (seals pinholes)
 static const bool kTiming = true;
 
+// Depth is the heaviest per-frame cost and the base panorama doesn't use it.
+// Grab color every frame (smooth base @ kFps) but only run the depth engine
+// every Nth grab — the near-field overlay refreshes at kFps/kDepthEveryN while
+// display + base stay at full rate. 1 = depth every frame (old behavior).
+//   kFps=15, kDepthEveryN=3  ->  20 depth computes/sec instead of 60.
+static const int kDepthEveryN = 3;
+
 // ----------------------------------------------------------------------------
 // Geometry helpers — cam_to_world = Ry(yaw) * Rx(pitch) * Rz(roll)
 // ----------------------------------------------------------------------------
@@ -172,6 +179,7 @@ struct CameraWorker {
     float fx = 0, fy = 0, cx = 0, cy = 0;
     std::atomic<bool> running{false};
     std::atomic<bool> frame_ready{false};
+    std::atomic<bool> healthy{true};
     std::atomic<float> zed_fps{0.f};
     std::thread thread;
 };
@@ -179,17 +187,49 @@ struct CameraWorker {
 static void acquisitionLoop(CameraWorker* w) {
     RuntimeParameters rt;
     Resolution res((size_t)w->img_w, (size_t)w->img_h);
+    int consecutive_fail = 0;
+    unsigned long frame_idx = 0;
     while (w->running.load()) {
         if (w->frame_ready.load()) { // wait until the GL thread consumes
             sl::sleep_ms(1);
             continue;
         }
-        if (w->zed.grab(rt) == ERROR_CODE::SUCCESS) {
+        // Only pay for the depth engine every Nth grab. enable_depth=false makes
+        // grab() skip stereo matching entirely -> big GPU/thermal savings while
+        // color (the base layer) still arrives at full rate.
+        const bool want_depth = (kDepthEveryN <= 1) || (frame_idx % kDepthEveryN == 0);
+        rt.enable_depth = want_depth;
+        const ERROR_CODE gerr = w->zed.grab(rt);
+        if (gerr == ERROR_CODE::SUCCESS) {
+            if (consecutive_fail > 0) {
+                std::cerr << "[" << w->config.name << "] recovered after "
+                          << consecutive_fail << " failed grabs" << std::endl;
+                consecutive_fail = 0;
+            }
             w->zed.retrieveImage(w->image, VIEW::LEFT, MEM::GPU, res);
-            w->zed.retrieveMeasure(w->cloud, MEASURE::XYZRGBA, MEM::GPU, res);
+            // Skip the cloud retrieve on no-depth frames; the overlay reuses the
+            // last cloud (near field just lags slightly, base stays sharp).
+            if (want_depth)
+                w->zed.retrieveMeasure(w->cloud, MEASURE::XYZRGBA, MEM::GPU, res);
             cudaStreamSynchronize(w->stream); // ensure GPU data is ready for our kernels
             w->zed_fps.store(w->zed.getCurrentFPS());
             w->frame_ready.store(true);
+            w->healthy.store(true);
+            ++frame_idx;
+        } else {
+            // Argus/GMSL pipelines on Jetson can drop out after long runs. Don't
+            // busy-spin grab() on failure (that hammers the daemon and makes it
+            // worse) — back off, log sparingly, and keep trying to recover.
+            ++consecutive_fail;
+            if (consecutive_fail == 1 ||
+                consecutive_fail == 30 ||
+                (consecutive_fail % 150) == 0) {
+                std::cerr << "[" << w->config.name << "] grab failed ("
+                          << toString(gerr) << "), x" << consecutive_fail
+                          << " — backing off" << std::endl;
+            }
+            if (consecutive_fail > 15) w->healthy.store(false);
+            sl::sleep_ms(consecutive_fail < 30 ? 5 : 33);
         }
     }
 }
@@ -299,12 +339,27 @@ int main() {
         }
     }
 
-    std::cout << "running. q / ESC to quit." << std::endl;
+    std::cout << "running. q/ESC quit  |  b: toggle base  o: toggle overlay"
+              << std::endl;
     auto t_fps = std::chrono::steady_clock::now();
     auto last_render = std::chrono::steady_clock::now();
     int frames = 0;
+    bool show_base = true;
+    bool show_overlay = true;
 
     while (viewer.isAvailable()) {
+        switch (viewer.consumeKey()) {
+            case 'b': case 'B':
+                show_base = !show_base;
+                std::cout << "\n[base " << (show_base ? "ON" : "OFF") << "]\n";
+                break;
+            case 'o': case 'O':
+                show_overlay = !show_overlay;
+                std::cout << "\n[overlay " << (show_overlay ? "ON" : "OFF") << "]\n";
+                break;
+            default: break;
+        }
+
         // Only render a COMPLETE set of fresh frames. Rendering whatever happens
         // to be ready on every fast loop iteration produces black/partial frames
         // between the 15 fps camera grabs -> flicker. Wait for all cameras, but
@@ -335,25 +390,31 @@ int main() {
 
         // BASE: rotation-only feather-blended background.
         launchClearAccum(d_accum, pano_w, pano_h, 0);
-        for (size_t i = 0; i < kNumCams; ++i) {
-            if (!ready[i]) continue;
-            CameraWorker& w = workers[i];
-            const ::uchar4* img = reinterpret_cast<const ::uchar4*>(w.image.getPtr<sl::uchar4>(MEM::GPU));
-            const int istep = (int)(w.image.getStepBytes(MEM::GPU) / sizeof(sl::uchar4));
-            launchAccumBase(img, istep, w.img_w, w.img_h,
-                            d_mapx[i], d_mapy[i], d_wgt[i], d_accum, pano_w, pano_h, 0);
+        if (show_base) {
+            for (size_t i = 0; i < kNumCams; ++i) {
+                if (!ready[i]) continue;
+                CameraWorker& w = workers[i];
+                const ::uchar4* img = reinterpret_cast<const ::uchar4*>(w.image.getPtr<sl::uchar4>(MEM::GPU));
+                if (!img) continue;
+                const int istep = (int)(w.image.getStepBytes(MEM::GPU) / sizeof(sl::uchar4));
+                launchAccumBase(img, istep, w.img_w, w.img_h,
+                                d_mapx[i], d_mapy[i], d_wgt[i], d_accum, pano_w, pano_h, 0);
+            }
         }
         launchFinalizeBase(d_accum, pano, pano_w, pano_h, 0);
 
         // OVERLAY: depth reprojection into one global z-buffer, composite on top.
         launchClearZ(d_zbuf, pano_w, pano_h, 0);
-        for (size_t i = 0; i < kNumCams; ++i) {
-            if (!ready[i]) continue;
-            CameraWorker& w = workers[i];
-            const ::float4* pc = reinterpret_cast<const ::float4*>(w.cloud.getPtr<sl::float4>(MEM::GPU));
-            const int pstep = (int)(w.cloud.getStepBytes(MEM::GPU) / sizeof(sl::float4));
-            launchScatterOverlay(pc, pstep, w.img_w, w.img_h, w.ext, kScale,
-                                 pano_w, pano_h, kNearMax, kPointStride, kSplat, d_zbuf, 0);
+        if (show_overlay) {
+            for (size_t i = 0; i < kNumCams; ++i) {
+                if (!ready[i]) continue;
+                CameraWorker& w = workers[i];
+                const ::float4* pc = reinterpret_cast<const ::float4*>(w.cloud.getPtr<sl::float4>(MEM::GPU));
+                if (!pc) continue;
+                const int pstep = (int)(w.cloud.getStepBytes(MEM::GPU) / sizeof(sl::float4));
+                launchScatterOverlay(pc, pstep, w.img_w, w.img_h, w.ext, kScale,
+                                     pano_w, pano_h, kNearMax, kPointStride, kSplat, d_zbuf, 0);
+            }
         }
         launchComposite(d_zbuf, pano, pano_w, pano_h, 0);
 
