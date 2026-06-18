@@ -46,7 +46,7 @@ static const RigCameraConfig RIG[] = {
 static const RESOLUTION kResolution = RESOLUTION::SVGA;
 static const int kFps = 15;
 
-static sl::Matrix3f matMul(const sl::Matrix3f& a, const sl::Matrix3f& b) {
+static sl::Matrix3f matMul(sl::Matrix3f a, sl::Matrix3f b) {
     sl::Matrix3f out;
     for (int r = 0; r < 3; ++r) {
         for (int c = 0; c < 3; ++c) {
@@ -98,9 +98,9 @@ static Transform makeCamToRig(const RigCameraConfig& cfg) {
 
     Transform T;
     T.setIdentity();
-    Rotation rot;
-    rot.initMatrix(R);
-    T.setRotation(rot);
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c)
+            T(r, c) = R(r, c);
     T.setTranslation(Translation(cfg.tx, cfg.ty, cfg.tz));
     return T;
 }
@@ -130,8 +130,7 @@ static void acquisitionLoop(CameraWorker* worker) {
                 worker->point_cloud,
                 MEASURE::XYZRGBA,
                 MEM::GPU,
-                worker->pc_res,
-                worker->cuda_stream
+                worker->pc_res
             );
             worker->zed_fps.store(worker->zed.getCurrentFPS());
             worker->frame_ready.store(true);
@@ -140,8 +139,9 @@ static void acquisitionLoop(CameraWorker* worker) {
 }
 
 int main(int argc, char** argv) {
+    constexpr size_t kNumCams = sizeof(RIG) / sizeof(RIG[0]);
     std::vector<CameraWorker> workers;
-    workers.resize(sizeof(RIG) / sizeof(RIG[0]));
+    workers.reserve(kNumCams);
 
     InitParameters init;
     init.camera_resolution = kResolution;
@@ -154,30 +154,32 @@ int main(int argc, char** argv) {
     Resolution pc_res;
     bool first_open = true;
 
-    for (size_t i = 0; i < workers.size(); ++i) {
-        workers[i].config = RIG[i];
-        init.input.setFromSerialNumber(workers[i].config.serial);
+    for (size_t i = 0; i < kNumCams; ++i) {
+        workers.emplace_back();
+        CameraWorker& w = workers.back();
+        w.config = RIG[i];
+        init.input.setFromSerialNumber(w.config.serial);
 
-        const ERROR_CODE err = workers[i].zed.open(init);
+        const ERROR_CODE err = w.zed.open(init);
         if (err != ERROR_CODE::SUCCESS) {
-            std::cerr << "Failed to open " << workers[i].config.name << " (SN "
-                      << workers[i].config.serial << "): " << toString(err) << std::endl;
+            std::cerr << "Failed to open " << w.config.name << " (SN "
+                      << w.config.serial << "): " << toString(err) << std::endl;
             return EXIT_FAILURE;
         }
 
         // Lock exposure — avoids known 4× ZED X frame-drop issue with auto-exposure in motion
-        workers[i].zed.setCameraSettings(VIDEO_SETTINGS::AEC_AGC, 0);
-        workers[i].zed.setCameraSettings(VIDEO_SETTINGS::EXPOSURE, 50);
+        w.zed.setCameraSettings(VIDEO_SETTINGS::AEC_AGC, 0);
+        w.zed.setCameraSettings(VIDEO_SETTINGS::EXPOSURE, 50);
 
-        workers[i].cuda_stream = workers[i].zed.getCUDAStream();
-        workers[i].pc_res = workers[i].zed.getRetrieveMeasureResolution();
+        w.cuda_stream = w.zed.getCUDAStream();
+        w.pc_res = w.zed.getCameraInformation().camera_configuration.resolution;
         if (first_open) {
-            pc_res = workers[i].pc_res;
+            pc_res = w.pc_res;
             first_open = false;
         }
 
-        std::cout << "Opened " << workers[i].config.name << " SN " << workers[i].config.serial
-                  << "  pc " << workers[i].pc_res.width << "x" << workers[i].pc_res.height << std::endl;
+        std::cout << "Opened " << w.config.name << " SN " << w.config.serial
+                  << "  pc " << w.pc_res.width << "x" << w.pc_res.height << std::endl;
     }
 
     GLViewer viewer;

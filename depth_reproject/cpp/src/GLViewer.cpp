@@ -179,9 +179,7 @@ GLenum GLViewer::initMulti(int argc, char** argv, sl::Resolution image_size) {
 }
 
 void GLViewer::registerCamera(unsigned serial, CUstream strm, const sl::Transform& cam_to_rig) {
-    PointCloud pc;
-    pc.initialize(pc_resolution_, strm);
-    point_clouds_.emplace(serial, std::move(pc));
+    point_clouds_[serial].initialize(pc_resolution_, strm);
     cam_to_rig_[serial] = cam_to_rig;
 }
 
