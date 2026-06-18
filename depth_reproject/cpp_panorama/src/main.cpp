@@ -62,6 +62,11 @@ static const int kSplat = 2;       // overlay splat radius (seals pinholes); eac
                                    // point paints a (2r+1)^2 block.
 static const bool kTiming = true;
 
+// Hole-fill dilation passes after compositing. Fills the black pixels left where
+// the near-field base was dropped but the overlay had no valid depth there.
+// Each pass reaches 1 px further; ~12 covers typical dropout holes. 0 = off.
+static const int kFillIters = 12;
+
 // Depth is the heaviest per-frame cost and the base panorama doesn't use it.
 // Grab color every frame (smooth base @ kFps) but only run the depth engine
 // every Nth grab — the near-field overlay refreshes at kFps/kDepthEveryN while
@@ -310,8 +315,10 @@ int main() {
     }
     ::float4* d_accum = nullptr;
     unsigned long long* d_zbuf = nullptr;
+    ::uchar4* d_fill = nullptr; // scratch for the hole-fill ping-pong
     cudaMalloc(&d_accum, (size_t)pano_w * pano_h * sizeof(::float4));
     cudaMalloc(&d_zbuf, (size_t)pano_w * pano_h * sizeof(unsigned long long));
+    cudaMalloc(&d_fill, (size_t)pano_w * pano_h * sizeof(::uchar4));
 
     // --- viewer (CUDA-GL interop) --------------------------------------------
     PanoramaViewer viewer;
@@ -428,6 +435,11 @@ int main() {
         }
         launchComposite(d_zbuf, pano, pano_w, pano_h, 0);
 
+        // Fill the black holes the near-drop + depth dropouts leave behind. Only
+        // meaningful when the overlay (and thus the near-drop) is active.
+        if (show_overlay && kFillIters > 0)
+            launchFillHoles(pano, d_fill, pano_w, pano_h, kFillIters, 0);
+
         cudaDeviceSynchronize(); // kernels done; cloud/image can be overwritten now
 
         float min_cam_fps = 0.f;
@@ -473,6 +485,7 @@ int main() {
     }
     cudaFree(d_accum);
     cudaFree(d_zbuf);
+    cudaFree(d_fill);
     viewer.close();
 
     std::cout << std::endl;
