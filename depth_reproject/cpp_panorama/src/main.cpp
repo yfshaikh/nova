@@ -57,7 +57,9 @@ static const int kFps = 15;
 static const float kScale = 240.f; // pano pixels/radian
 static const float kNearMax = 8.f; // meters; closer gets depth reprojection
 static const int kPointStride = 2; // subsample the cloud (every Nth px)
-static const int kSplat = 1;       // overlay splat radius (seals pinholes)
+static const int kSplat = 2;       // overlay splat radius (seals pinholes); each
+                                   // point paints a (2r+1)^2 block. 2 fills the
+                                   // gaps left by kPointStride=2.
 static const bool kTiming = true;
 
 // Depth is the heaviest per-frame cost and the base panorama doesn't use it.
