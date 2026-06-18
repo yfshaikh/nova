@@ -301,10 +301,29 @@ int main() {
 
     std::cout << "running. q / ESC to quit." << std::endl;
     auto t_fps = std::chrono::steady_clock::now();
+    auto last_render = std::chrono::steady_clock::now();
     int frames = 0;
 
     while (viewer.isAvailable()) {
+        // Only render a COMPLETE set of fresh frames. Rendering whatever happens
+        // to be ready on every fast loop iteration produces black/partial frames
+        // between the 15 fps camera grabs -> flicker. Wait for all cameras, but
+        // don't starve the display if one camera lags (>80 ms => render partial).
+        int nready = 0;
+        bool all = true;
+        for (auto& w : workers) {
+            const bool r = w.frame_ready.load();
+            all &= r;
+            nready += r ? 1 : 0;
+        }
         const auto t_start = std::chrono::steady_clock::now();
+        const float since_ms =
+            std::chrono::duration<float, std::milli>(t_start - last_render).count();
+        if (!(all || (nready > 0 && since_ms > 80.f))) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+        last_render = t_start;
 
         ::uchar4* pano = viewer.mapBuffer();
         if (!pano) break;
