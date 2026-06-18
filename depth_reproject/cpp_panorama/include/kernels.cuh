@@ -22,8 +22,14 @@ void launchClearAccum(float4* accum, int pano_w, int pano_h, cudaStream_t s);
 
 // Bilinearly sample one camera's BGRA image through its precomputed cylinder
 // map (mapx/mapy, pano-sized) and add color * weight into accum.
+//
+// If cloud != nullptr and near_drop > 0, base pixels whose source depth is
+// closer than near_drop are SKIPPED — the depth overlay redraws that near field
+// from the rig origin, so leaving it in the base would double it (parallax
+// smear under the corrected overlay). Mirrors the CPU file's far_w near-drop.
 void launchAccumBase(const uchar4* img, int img_step, int img_w, int img_h,
                      const float* mapx, const float* mapy, const float* wgt,
+                     const float4* cloud, int cloud_step, float near_drop,
                      float4* accum, int pano_w, int pano_h, cudaStream_t s);
 
 // accum -> pano (uchar4 BGRA, alpha 255).

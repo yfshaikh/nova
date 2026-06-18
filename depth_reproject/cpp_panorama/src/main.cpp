@@ -388,7 +388,11 @@ int main() {
         for (size_t i = 0; i < kNumCams; ++i)
             ready[i] = workers[i].frame_ready.load();
 
-        // BASE: rotation-only feather-blended background.
+        // BASE: rotation-only feather-blended background. When the overlay is on,
+        // drop the near field from the base so it isn't doubled under the overlay
+        // (the overlay redraws it depth-correct). With the overlay off, keep the
+        // full base so there are no black holes.
+        const float base_near_drop = show_overlay ? kNearMax : 0.f;
         launchClearAccum(d_accum, pano_w, pano_h, 0);
         if (show_base) {
             for (size_t i = 0; i < kNumCams; ++i) {
@@ -397,8 +401,12 @@ int main() {
                 const ::uchar4* img = reinterpret_cast<const ::uchar4*>(w.image.getPtr<sl::uchar4>(MEM::GPU));
                 if (!img) continue;
                 const int istep = (int)(w.image.getStepBytes(MEM::GPU) / sizeof(sl::uchar4));
+                const ::float4* pc = reinterpret_cast<const ::float4*>(w.cloud.getPtr<sl::float4>(MEM::GPU));
+                const int cstep = pc ? (int)(w.cloud.getStepBytes(MEM::GPU) / sizeof(sl::float4)) : 0;
                 launchAccumBase(img, istep, w.img_w, w.img_h,
-                                d_mapx[i], d_mapy[i], d_wgt[i], d_accum, pano_w, pano_h, 0);
+                                d_mapx[i], d_mapy[i], d_wgt[i],
+                                pc, cstep, base_near_drop,
+                                d_accum, pano_w, pano_h, 0);
             }
         }
         launchFinalizeBase(d_accum, pano, pano_w, pano_h, 0);

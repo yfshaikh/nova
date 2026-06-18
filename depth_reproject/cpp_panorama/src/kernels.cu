@@ -19,6 +19,7 @@ __global__ void kClearAccum(float4* accum, int pw, int ph) {
 
 __global__ void kAccumBase(const uchar4* img, int istep, int iw, int ih,
                            const float* mapx, const float* mapy, const float* wgt,
+                           const float4* cloud, int cstep, float near_drop,
                            float4* accum, int pw, int ph) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -35,6 +36,19 @@ __global__ void kAccumBase(const uchar4* img, int istep, int iw, int ih,
     const int x0 = (int)floorf(mx);
     const int y0 = (int)floorf(my);
     if (x0 < 0 || y0 < 0 || x0 >= iw - 1 || y0 >= ih - 1) return;
+
+    // Drop the near field from the base so the depth overlay isn't doubled.
+    // Sample this camera's range at the (nearest) source pixel; if it's closer
+    // than near_drop, skip — the overlay owns that pixel.
+    if (cloud != nullptr && near_drop > 0.f) {
+        const int sx = (int)(mx + 0.5f);
+        const int sy = (int)(my + 0.5f);
+        const float4 p = cloud[sy * cstep + sx];
+        if (isfinite(p.x) && isfinite(p.y) && isfinite(p.z)) {
+            const float rng = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
+            if (rng < near_drop) return;
+        }
+    }
 
     const float fx = mx - x0;
     const float fy = my - y0;
@@ -155,9 +169,11 @@ void launchClearAccum(float4* accum, int pw, int ph, cudaStream_t s) {
 
 void launchAccumBase(const uchar4* img, int istep, int iw, int ih,
                      const float* mapx, const float* mapy, const float* wgt,
+                     const float4* cloud, int cstep, float near_drop,
                      float4* accum, int pw, int ph, cudaStream_t s) {
     const dim3 b(16, 16);
-    kAccumBase<<<grid2d(pw, ph, b), b, 0, s>>>(img, istep, iw, ih, mapx, mapy, wgt, accum, pw, ph);
+    kAccumBase<<<grid2d(pw, ph, b), b, 0, s>>>(img, istep, iw, ih, mapx, mapy, wgt,
+                                               cloud, cstep, near_drop, accum, pw, ph);
 }
 
 void launchFinalizeBase(const float4* accum, uchar4* pano, int pw, int ph, cudaStream_t s) {
