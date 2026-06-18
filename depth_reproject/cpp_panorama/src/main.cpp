@@ -266,9 +266,9 @@ int main() {
         d_mapy[i] = uploadVec(mapy[i]);
         d_wgt[i] = uploadVec(wgt[i]);
     }
-    float4* d_accum = nullptr;
+    ::float4* d_accum = nullptr;
     unsigned long long* d_zbuf = nullptr;
-    cudaMalloc(&d_accum, (size_t)pano_w * pano_h * sizeof(float4));
+    cudaMalloc(&d_accum, (size_t)pano_w * pano_h * sizeof(::float4));
     cudaMalloc(&d_zbuf, (size_t)pano_w * pano_h * sizeof(unsigned long long));
 
     // --- viewer (CUDA-GL interop) --------------------------------------------
@@ -306,7 +306,7 @@ int main() {
     while (viewer.isAvailable()) {
         const auto t_start = std::chrono::steady_clock::now();
 
-        uchar4* pano = viewer.mapBuffer();
+        ::uchar4* pano = viewer.mapBuffer();
         if (!pano) break;
 
         // Snapshot readiness ONCE so base + overlay use the same set of frames.
@@ -319,7 +319,7 @@ int main() {
         for (size_t i = 0; i < kNumCams; ++i) {
             if (!ready[i]) continue;
             CameraWorker& w = workers[i];
-            const uchar4* img = reinterpret_cast<const uchar4*>(w.image.getPtr<sl::uchar4>(MEM::GPU));
+            const ::uchar4* img = reinterpret_cast<const ::uchar4*>(w.image.getPtr<sl::uchar4>(MEM::GPU));
             const int istep = (int)(w.image.getStepBytes(MEM::GPU) / sizeof(sl::uchar4));
             launchAccumBase(img, istep, w.img_w, w.img_h,
                             d_mapx[i], d_mapy[i], d_wgt[i], d_accum, pano_w, pano_h, 0);
@@ -331,7 +331,7 @@ int main() {
         for (size_t i = 0; i < kNumCams; ++i) {
             if (!ready[i]) continue;
             CameraWorker& w = workers[i];
-            const float4* pc = reinterpret_cast<const float4*>(w.cloud.getPtr<sl::float4>(MEM::GPU));
+            const ::float4* pc = reinterpret_cast<const ::float4*>(w.cloud.getPtr<sl::float4>(MEM::GPU));
             const int pstep = (int)(w.cloud.getStepBytes(MEM::GPU) / sizeof(sl::float4));
             launchScatterOverlay(pc, pstep, w.img_w, w.img_h, w.ext, kScale,
                                  pano_w, pano_h, kNearMax, kPointStride, kSplat, d_zbuf, 0);
