@@ -17,12 +17,12 @@
 #include "GLViewer.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <iostream>
 #include <thread>
-#include <vector>
 
 using namespace sl;
 
@@ -94,13 +94,13 @@ static Transform makeCamToRig(const RigCameraConfig& cfg) {
     const float y = cfg.yaw_deg * static_cast<float>(M_PI) / 180.f;
     const float p = cfg.pitch_deg * static_cast<float>(M_PI) / 180.f;
     const float r = cfg.roll_deg * static_cast<float>(M_PI) / 180.f;
-    const sl::Matrix3f R = matMul(matMul(rotY(y), rotX(p)), rotZ(r));
+    sl::Matrix3f R = matMul(matMul(rotY(y), rotX(p)), rotZ(r));
 
     Transform T;
     T.setIdentity();
-    for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < 3; ++c)
-            T(r, c) = R(r, c);
+    for (int rr = 0; rr < 3; ++rr)
+        for (int cc = 0; cc < 3; ++cc)
+            T(rr, cc) = R(rr, cc);
     T.setTranslation(Translation(cfg.tx, cfg.ty, cfg.tz));
     return T;
 }
@@ -140,8 +140,7 @@ static void acquisitionLoop(CameraWorker* worker) {
 
 int main(int argc, char** argv) {
     constexpr size_t kNumCams = sizeof(RIG) / sizeof(RIG[0]);
-    std::vector<CameraWorker> workers;
-    workers.reserve(kNumCams);
+    std::array<CameraWorker, kNumCams> workers;
 
     InitParameters init;
     init.camera_resolution = kResolution;
@@ -155,8 +154,7 @@ int main(int argc, char** argv) {
     bool first_open = true;
 
     for (size_t i = 0; i < kNumCams; ++i) {
-        workers.emplace_back();
-        CameraWorker& w = workers.back();
+        CameraWorker& w = workers[i];
         w.config = RIG[i];
         init.input.setFromSerialNumber(w.config.serial);
 
