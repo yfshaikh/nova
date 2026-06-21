@@ -3,7 +3,6 @@
 #include <cstdio>
 
 bool PanoramaViewer::available_ = false;
-int PanoramaViewer::last_key_ = 0;
 
 bool PanoramaViewer::init(int pano_w, int pano_h, int win_w, int win_h, const char* title) {
     pano_w_ = pano_w;
@@ -27,17 +26,12 @@ bool PanoramaViewer::init(int pano_w, int pano_h, int win_w, int win_h, const ch
     // Texture that mirrors the panorama.
     glGenTextures(1, &tex_);
     glBindTexture(GL_TEXTURE_2D, tex_);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, pano_w_, pano_h_, 0,
-                 GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
-    // Set params AFTER the image is defined (some drivers ignore them on an
-    // incomplete texture, which can leave WRAP at the GL_REPEAT default and
-    // bleed the top/bottom rows into a duplicated band).
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, pano_w_, pano_h_, 0,
+                 GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
     glBindTexture(GL_TEXTURE_2D, 0);
 
     // Pixel buffer object the CUDA kernels write into.
@@ -139,14 +133,6 @@ void PanoramaViewer::close() {
 void PanoramaViewer::keyCb(unsigned char key, int, int) {
     if (key == 'q' || key == 'Q' || key == 27)
         available_ = false;
-    else
-        last_key_ = key;
-}
-
-int PanoramaViewer::consumeKey() {
-    int k = last_key_;
-    last_key_ = 0;
-    return k;
 }
 
 void PanoramaViewer::closeCb() {

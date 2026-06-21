@@ -19,7 +19,6 @@ __global__ void kClearAccum(float4* accum, int pw, int ph) {
 
 __global__ void kAccumBase(const uchar4* img, int istep, int iw, int ih,
                            const float* mapx, const float* mapy, const float* wgt,
-                           const float4* cloud, int cstep, float near_drop,
                            float4* accum, int pw, int ph) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -36,19 +35,6 @@ __global__ void kAccumBase(const uchar4* img, int istep, int iw, int ih,
     const int x0 = (int)floorf(mx);
     const int y0 = (int)floorf(my);
     if (x0 < 0 || y0 < 0 || x0 >= iw - 1 || y0 >= ih - 1) return;
-
-    // Drop the near field from the base so the depth overlay isn't doubled.
-    // Sample this camera's range at the (nearest) source pixel; if it's closer
-    // than near_drop, skip — the overlay owns that pixel.
-    if (cloud != nullptr && near_drop > 0.f) {
-        const int sx = (int)(mx + 0.5f);
-        const int sy = (int)(my + 0.5f);
-        const float4 p = cloud[sy * cstep + sx];
-        if (isfinite(p.x) && isfinite(p.y) && isfinite(p.z)) {
-            const float rng = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
-            if (rng < near_drop) return;
-        }
-    }
 
     const float fx = mx - x0;
     const float fy = my - y0;
@@ -70,7 +56,6 @@ __global__ void kAccumBase(const uchar4* img, int istep, int iw, int ih,
     a.x += b * w;
     a.y += g * w;
     a.z += r * w;
-    a.w += w;            // total weight written here (0 => base wrote nothing)
     accum[pid] = a;
 }
 
@@ -84,10 +69,7 @@ __global__ void kFinalizeBase(const float4* accum, uchar4* pano, int pw, int ph)
     c.x = (unsigned char)fminf(255.f, fmaxf(0.f, a.x));
     c.y = (unsigned char)fminf(255.f, fmaxf(0.f, a.y));
     c.z = (unsigned char)fminf(255.f, fmaxf(0.f, a.z));
-    // alpha = "written" flag for the hole-fill pass: 0 where the base put down
-    // nothing (e.g. near field dropped for the overlay). The overlay composite
-    // and the fill pass will set it to 255 as pixels get real color.
-    c.w = (a.w > 1e-6f) ? 255 : 0;
+    c.w = 255;
     pano[pid] = c;
 }
 
@@ -164,39 +146,6 @@ __global__ void kComposite(const unsigned long long* zbuf, uchar4* pano, int pw,
     pano[pid] = c;
 }
 
-// One dilation pass of the hole-fill: copy written pixels through; for unwritten
-// pixels (alpha 0), average the written neighbors (8-connected, x wraps for the
-// 360 seam) and mark filled. Iterating this propagates color into the holes left
-// by the near-field base drop / depth dropouts — no black, no foreground ghost.
-__global__ void kFillHoles(const uchar4* src, uchar4* dst, int pw, int ph) {
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    if (x >= pw || y >= ph) return;
-    const int pid = y * pw + x;
-
-    const uchar4 c = src[pid];
-    if (c.w != 0) { dst[pid] = c; return; }  // already has real/filled color
-
-    int sb = 0, sg = 0, sr = 0, n = 0;
-    for (int dy = -1; dy <= 1; ++dy) {
-        const int yy = y + dy;
-        if (yy < 0 || yy >= ph) continue;
-        for (int dx = -1; dx <= 1; ++dx) {
-            if (dx == 0 && dy == 0) continue;
-            const int xx = ((x + dx) % pw + pw) % pw;   // wrap azimuth seam
-            const uchar4 nc = src[yy * pw + xx];
-            if (nc.w != 0) { sb += nc.x; sg += nc.y; sr += nc.z; ++n; }
-        }
-    }
-    if (n > 0) {
-        dst[pid] = make_uchar4((unsigned char)(sb / n),
-                               (unsigned char)(sg / n),
-                               (unsigned char)(sr / n), 255);
-    } else {
-        dst[pid] = c;   // still surrounded by holes; a later pass may reach it
-    }
-}
-
 } // namespace
 
 void launchClearAccum(float4* accum, int pw, int ph, cudaStream_t s) {
@@ -206,11 +155,9 @@ void launchClearAccum(float4* accum, int pw, int ph, cudaStream_t s) {
 
 void launchAccumBase(const uchar4* img, int istep, int iw, int ih,
                      const float* mapx, const float* mapy, const float* wgt,
-                     const float4* cloud, int cstep, float near_drop,
                      float4* accum, int pw, int ph, cudaStream_t s) {
     const dim3 b(16, 16);
-    kAccumBase<<<grid2d(pw, ph, b), b, 0, s>>>(img, istep, iw, ih, mapx, mapy, wgt,
-                                               cloud, cstep, near_drop, accum, pw, ph);
+    kAccumBase<<<grid2d(pw, ph, b), b, 0, s>>>(img, istep, iw, ih, mapx, mapy, wgt, accum, pw, ph);
 }
 
 void launchFinalizeBase(const float4* accum, uchar4* pano, int pw, int ph, cudaStream_t s) {
@@ -236,19 +183,4 @@ void launchScatterOverlay(const float4* pc, int step, int iw, int ih,
 void launchComposite(const unsigned long long* zbuf, uchar4* pano, int pw, int ph, cudaStream_t s) {
     const dim3 b(16, 16);
     kComposite<<<grid2d(pw, ph, b), b, 0, s>>>(zbuf, pano, pw, ph);
-}
-
-void launchFillHoles(uchar4* pano, uchar4* scratch, int pw, int ph, int iters,
-                     cudaStream_t s) {
-    const dim3 b(16, 16);
-    const dim3 g = grid2d(pw, ph, b);
-    // Ping-pong between pano and scratch. With an even iter count the final
-    // result lands back in pano (the PBO).
-    if (iters & 1) ++iters;
-    uchar4* src = pano;
-    uchar4* dst = scratch;
-    for (int i = 0; i < iters; ++i) {
-        kFillHoles<<<g, b, 0, s>>>(src, dst, pw, ph);
-        uchar4* tmp = src; src = dst; dst = tmp;
-    }
 }
