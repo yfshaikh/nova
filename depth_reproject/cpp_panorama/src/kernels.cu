@@ -71,6 +71,7 @@ __global__ void kAccumBase(const uchar4* img, int istep, int iw, int ih,
     a.x += b * w;
     a.y += g * w;
     a.z += r * w;
+    a.w += w;            // total weight written here (0 => base wrote nothing)
     accum[pid] = a;
 }
 
@@ -84,7 +85,10 @@ __global__ void kFinalizeBase(const float4* accum, uchar4* pano, int pw, int ph)
     c.x = (unsigned char)fminf(255.f, fmaxf(0.f, a.x));
     c.y = (unsigned char)fminf(255.f, fmaxf(0.f, a.y));
     c.z = (unsigned char)fminf(255.f, fmaxf(0.f, a.z));
-    c.w = 255;
+    // alpha = "written" flag for the hole-fill: 0 where the base put down nothing
+    // (near field dropped, or no camera coverage). The overlay composite and the
+    // fill pass set it to 255 as pixels receive real color.
+    c.w = (a.w > 1e-6f) ? 255 : 0;
     pano[pid] = c;
 }
 
@@ -161,6 +165,38 @@ __global__ void kComposite(const unsigned long long* zbuf, uchar4* pano, int pw,
     pano[pid] = c;
 }
 
+// One dilation pass of the hole-fill: written pixels (alpha != 0) pass through;
+// unwritten pixels average their written 8-neighbors (x wraps for the 360 seam)
+// and become written. Iterating propagates color into the holes left by the
+// near-field base drop / depth dropouts — no black, and no foreground ghost
+// (the dropped near smear is gone, so we fill from surrounding background).
+__global__ void kFillHoles(const uchar4* src, uchar4* dst, int pw, int ph) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= pw || y >= ph) return;
+    const int pid = y * pw + x;
+
+    const uchar4 c = src[pid];
+    if (c.w != 0) { dst[pid] = c; return; }  // already has real/filled color
+
+    int sb = 0, sg = 0, sr = 0, n = 0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        const int yy = y + dy;
+        if (yy < 0 || yy >= ph) continue;
+        for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            const int xx = ((x + dx) % pw + pw) % pw;   // wrap azimuth seam
+            const uchar4 nc = src[yy * pw + xx];
+            if (nc.w != 0) { sb += nc.x; sg += nc.y; sr += nc.z; ++n; }
+        }
+    }
+    if (n > 0)
+        dst[pid] = make_uchar4((unsigned char)(sb / n), (unsigned char)(sg / n),
+                               (unsigned char)(sr / n), 255);
+    else
+        dst[pid] = c;   // still surrounded by holes; a later pass may reach it
+}
+
 } // namespace
 
 void launchClearAccum(float4* accum, int pw, int ph, cudaStream_t s) {
@@ -200,4 +236,17 @@ void launchScatterOverlay(const float4* pc, int step, int iw, int ih,
 void launchComposite(const unsigned long long* zbuf, uchar4* pano, int pw, int ph, cudaStream_t s) {
     const dim3 b(16, 16);
     kComposite<<<grid2d(pw, ph, b), b, 0, s>>>(zbuf, pano, pw, ph);
+}
+
+void launchFillHoles(uchar4* pano, uchar4* scratch, int pw, int ph, int iters,
+                     cudaStream_t s) {
+    const dim3 b(16, 16);
+    const dim3 g = grid2d(pw, ph, b);
+    if (iters & 1) ++iters;       // even count => result lands back in pano
+    uchar4* src = pano;
+    uchar4* dst = scratch;
+    for (int i = 0; i < iters; ++i) {
+        kFillHoles<<<g, b, 0, s>>>(src, dst, pw, ph);
+        uchar4* tmp = src; src = dst; dst = tmp;
+    }
 }
