@@ -333,15 +333,20 @@ int main() {
         for (size_t i = 0; i < kNumCams; ++i)
             ready[i] = workers[i].frame_ready.load();
 
-        // BASE: rotation-only feather-blended background.
+        // BASE: rotation-only feather-blended background. Drop the near field so
+        // it isn't doubled under the depth overlay (overlay redraws it correctly).
         launchClearAccum(d_accum, pano_w, pano_h, 0);
         for (size_t i = 0; i < kNumCams; ++i) {
             if (!ready[i]) continue;
             CameraWorker& w = workers[i];
             const ::uchar4* img = reinterpret_cast<const ::uchar4*>(w.image.getPtr<sl::uchar4>(MEM::GPU));
             const int istep = (int)(w.image.getStepBytes(MEM::GPU) / sizeof(sl::uchar4));
+            const ::float4* pc = reinterpret_cast<const ::float4*>(w.cloud.getPtr<sl::float4>(MEM::GPU));
+            const int cstep = pc ? (int)(w.cloud.getStepBytes(MEM::GPU) / sizeof(sl::float4)) : 0;
             launchAccumBase(img, istep, w.img_w, w.img_h,
-                            d_mapx[i], d_mapy[i], d_wgt[i], d_accum, pano_w, pano_h, 0);
+                            d_mapx[i], d_mapy[i], d_wgt[i],
+                            pc, cstep, kNearMax,
+                            d_accum, pano_w, pano_h, 0);
         }
         launchFinalizeBase(d_accum, pano, pano_w, pano_h, 0);
 
