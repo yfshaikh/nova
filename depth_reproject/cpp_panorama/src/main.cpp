@@ -58,10 +58,6 @@ static const float kScale = 240.f; // pano pixels/radian
 static const float kNearMax = 8.f; // meters; closer gets depth reprojection
 static const int kPointStride = 2; // subsample the cloud (every Nth px)
 static const int kSplat = 1;       // overlay splat radius (seals pinholes)
-static const int kFillIters = 12;  // hole-fill dilation passes after compositing
-                                   // (fills the black left by the near-drop where
-                                   // the overlay had no depth). 0 = off; each pass
-                                   // reaches ~1px further into a hole.
 static const bool kTiming = true;
 
 // ----------------------------------------------------------------------------
@@ -272,10 +268,8 @@ int main() {
     }
     ::float4* d_accum = nullptr;
     unsigned long long* d_zbuf = nullptr;
-    ::uchar4* d_fill = nullptr; // scratch for the hole-fill ping-pong
     cudaMalloc(&d_accum, (size_t)pano_w * pano_h * sizeof(::float4));
     cudaMalloc(&d_zbuf, (size_t)pano_w * pano_h * sizeof(unsigned long long));
-    cudaMalloc(&d_fill, (size_t)pano_w * pano_h * sizeof(::uchar4));
 
     // --- viewer (CUDA-GL interop) --------------------------------------------
     PanoramaViewer viewer;
@@ -368,10 +362,6 @@ int main() {
         }
         launchComposite(d_zbuf, pano, pano_w, pano_h, 0);
 
-        // Fill the black holes the near-drop leaves where the overlay had no depth.
-        if (kFillIters > 0)
-            launchFillHoles(pano, d_fill, pano_w, pano_h, kFillIters, 0);
-
         cudaDeviceSynchronize(); // kernels done; cloud/image can be overwritten now
 
         float min_cam_fps = 0.f;
@@ -417,7 +407,6 @@ int main() {
     }
     cudaFree(d_accum);
     cudaFree(d_zbuf);
-    cudaFree(d_fill);
     viewer.close();
 
     std::cout << std::endl;

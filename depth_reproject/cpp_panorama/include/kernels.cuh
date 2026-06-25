@@ -50,9 +50,3 @@ void launchScatterOverlay(const float4* pc, int pc_step, int img_w, int img_h,
 // Write the nearest overlay color over the base where the z-buffer is populated.
 void launchComposite(const unsigned long long* zbuf, uchar4* pano,
                      int pano_w, int pano_h, cudaStream_t s);
-
-// Flood-fill unwritten pixels (alpha 0) from neighbors, `iters` dilation passes,
-// ping-ponging through `scratch` (pano_w*pano_h uchar4). Removes the black holes
-// left by the near-field base drop + depth dropouts. Result lands in `pano`.
-void launchFillHoles(uchar4* pano, uchar4* scratch, int pano_w, int pano_h,
-                     int iters, cudaStream_t s);
